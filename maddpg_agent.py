@@ -38,13 +38,13 @@ class Agent():
         self.seed = random.seed(random_seed)
 
         # Actor Network (w/ Target Network)
-        self.actor_local = Actor(state_size, action_size, random_seed).to(device)
-        self.actor_target = Actor(state_size, action_size, random_seed).to(device)
+        self.actor_local = Actor(state_size*2, action_size, random_seed).to(device)
+        self.actor_target = Actor(state_size*2, action_size, random_seed).to(device)
         self.actor_optimizer = optim.Adam(self.actor_local.parameters(), lr=LR_ACTOR)
 
         # Critic Network (w/ Target Network)
-        self.critic_local = Critic(state_size, action_size, random_seed).to(device)
-        self.critic_target = Critic(state_size, action_size, random_seed).to(device)
+        self.critic_local = Critic(state_size*2, action_size*2, random_seed).to(device)
+        self.critic_target = Critic(state_size*2, action_size*2, random_seed).to(device)
         self.critic_optimizer = optim.Adam(self.critic_local.parameters(), lr=LR_CRITIC, weight_decay=WEIGHT_DECAY)
 
         # Noise process
@@ -52,17 +52,16 @@ class Agent():
 
         # Replay memory
         self.memory = ReplayBuffer(action_size, BUFFER_SIZE, BATCH_SIZE, random_seed)
-    
-    def step(self, state, action, reward, next_state, done):
+
+    def step(self, state, action, reward, next_state, done, agent_index):
         """Save experience in replay memory, and use random sample from buffer to learn."""
         # Save experience / reward
-        for s, a, r, s_p, d in zip(state, action, reward, next_state, done):
-            self.memory.add(s, a, r, s_p, d)
+        self.memory.add(state, action, reward, next_state, done)
 
         # Learn, if enough samples are available in memory
         if len(self.memory) > BATCH_SIZE:
             experiences = self.memory.sample()
-            self.learn(experiences, GAMMA)
+            self.learn(experiences, GAMMA, agent_index)
 
     def act(self, state, add_noise=True):
         """Returns actions for given state as per current policy."""
@@ -80,7 +79,7 @@ class Agent():
     def reset(self):
         self.noise.reset()
 
-    def learn(self, experiences, gamma):
+    def learn(self, experiences, gamma, agent_index):
         """Update policy and value parameters using given batch of experience tuples.
         Q_targets = r + γ * critic_target(next_state, actor_target(next_state))
         where:
@@ -97,8 +96,13 @@ class Agent():
         # ---------------------------- update critic ---------------------------- #
         # Get predicted next-state actions and Q values from target models
         actions_next = self.actor_target(next_states)
-        Q_targets_next = self.critic_target(next_states, actions_next)
+        # Construct next actions vector relative to the agent
+        if agent_index == 0:
+            actions_next = torch.cat((actions_next, actions[:,2:]), dim=1)
+        else:
+            actions_next = torch.cat((actions[:,:2], actions_next), dim=1)
         # Compute Q targets for current states (y_i)
+        Q_targets_next = self.critic_target(next_states, actions_next)
         Q_targets = rewards + (gamma * Q_targets_next * (1 - dones))
         # Compute critic loss
         Q_expected = self.critic_local(states, actions)
@@ -106,11 +110,18 @@ class Agent():
         # Minimize the loss
         self.critic_optimizer.zero_grad()
         critic_loss.backward()
+        torch.nn.utils.clip_grad_norm_(self.critic_local.parameters(), 1)
         self.critic_optimizer.step()
 
         # ---------------------------- update actor ---------------------------- #
         # Compute actor loss
         actions_pred = self.actor_local(states)
+        # Construct action prediction vector relative to each agent
+        if agent_index == 0:
+            actions_pred = torch.cat((actions_pred, actions[:,2:]), dim=1)
+        else:
+            actions_pred = torch.cat((actions[:,:2], actions_pred), dim=1)
+        # Compute actor loss
         actor_loss = -self.critic_local(states, actions_pred).mean()
         # Minimize the loss
         self.actor_optimizer.zero_grad()
@@ -119,7 +130,7 @@ class Agent():
 
         # ----------------------- update target networks ----------------------- #
         self.soft_update(self.critic_local, self.critic_target, TAU)
-        self.soft_update(self.actor_local, self.actor_target, TAU)                     
+        self.soft_update(self.actor_local, self.actor_target, TAU)
 
     def soft_update(self, local_model, target_model, tau):
         """Soft update model parameters.
